@@ -1,15 +1,16 @@
 'use strict';
 
-// The hosted page accepts commands only from the exact extension origin passed
-// by the extension itself. Chrome may expose MessageEvent.source as null for
-// postMessage calls initiated by extension code, so do not require source===window.
+// Commands are sent by the extension content script into this HTTPS page.
+// In Chrome's isolated-world bridge, MessageEvent.origin is the HOST PAGE origin,
+// not chrome-extension://<id>. The random per-tab channel plus the fixed source
+// marker bind messages to the active extension session.
 const params = new URLSearchParams(window.location.search);
 const initialVideoId = params.get('videoId') || '';
 const channel = params.get('channel') || '';
 const extensionId = params.get('extensionId') || '';
-const expectedExtensionOrigin = /^[a-p]{32}$/.test(extensionId)
-  ? `chrome-extension://${extensionId}`
-  : '';
+const hasValidExtensionId = /^[a-p]{32}$/.test(extensionId);
+const bridgeVersion = params.get('bridgeVersion') || '';
+const expectedPageOrigin = window.location.origin;
 const initialVolume = Math.round(Math.max(0, Math.min(1, Number(params.get('volume') ?? '0.8'))) * 100);
 const titleElement = document.getElementById('videoTitle');
 const statusElement = document.getElementById('status');
@@ -83,14 +84,16 @@ function acknowledgeCommand(command, accepted, queued = false) {
 }
 
 window.addEventListener('message', event => {
-  // For messages posted by extension code, Chrome may set source to null.
-  // Authenticate by exact extension origin plus the random per-tab channel.
-  if (!expectedExtensionOrigin || event.origin !== expectedExtensionOrigin) return;
+  // A content script runs against the host document. The page sees its
+  // postMessage with the host page's HTTPS origin. Depending on the Chrome
+  // context, source can be window or null; accept only those cases, this exact
+  // page origin, our message marker, and the per-tab random channel.
+  if (event.origin !== expectedPageOrigin) return;
   if (event.source !== null && event.source !== window) return;
   const message = event.data;
   if (!message || message.source !== 'browser-music-player-extension' || message.channel !== channel) return;
   if (!allowedCommands.has(message.func)) return;
-  console.info('[Browser Music Player Bridge] Nhận lệnh từ extension:', message.func);
+  console.info('[Browser Music Player Bridge] Đã nhận lệnh từ popup:', message.func, { origin: event.origin, bridgeVersion });
 
   if (!player) {
     pendingCommands.push({ func: message.func, args: Array.isArray(message.args) ? message.args : [] });
@@ -102,8 +105,8 @@ window.addEventListener('message', event => {
   if (!accepted) emitBridgeEvent('COMMAND_ERROR', { message: `Bridge không thực hiện được lệnh ${message.func}.`, videoId: currentVideoId });
 });
 
-if (!expectedExtensionOrigin || !channel) {
-  setStatus('Tab này chưa được mở bởi Browser Music Player. Hãy mở video từ popup extension để bật kết nối điều khiển.');
+if (!hasValidExtensionId || !channel || bridgeVersion !== '3') {
+  setStatus('Tab này chưa được mở bởi Browser Music Player 1.0.3. Hãy mở video từ popup extension để bật kết nối điều khiển.');
 } else {
   emitBridgeEvent('SCRIPT_READY');
 }
@@ -115,7 +118,7 @@ window.onYouTubeIframeAPIReady = function () {
     emitBridgeEvent('ERROR', { errorCode: 2, videoId: initialVideoId });
     return;
   }
-  if (!expectedExtensionOrigin || !channel) {
+  if (!hasValidExtensionId || !channel || bridgeVersion !== '3') {
     setStatus('Hãy mở video thông qua popup Browser Music Player để bật điều khiển từ extension.');
   }
   youtubeLink.href = `https://www.youtube.com/watch?v=${initialVideoId}`;
