@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Browser Music Player · YouTube Bridge</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #11131a; color: #f4f5fa; }
+    main { width: min(920px, calc(100% - 32px)); margin: 32px auto; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .logo { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(145deg,#a08afa,#6652cc); font-size: 25px; }
+    h1 { margin: 0; font-size: 18px; }
+    .sub { color: #a0a6b8; font-size: 12px; margin-top: 4px; }
+    section { padding: 22px; border: 1px solid #303648; border-radius: 18px; background: #1b1e29; }
+    .eyebrow { color: #a99aff; font-size: 10px; font-weight: 800; letter-spacing: 1.3px; }
+    h2 { font-size: 20px; margin: 8px 0 16px; }
+    #player { width: 100%; aspect-ratio: 16 / 9; min-height: 240px; background: #08090d; border-radius: 12px; overflow: hidden; }
+    #player iframe { width: 100%; height: 100%; }
+    #status { color: #c0c4d0; font-size: 13px; line-height: 1.6; margin: 16px 0 0; }
+    .note { color: #858b9c; font-size: 11px; line-height: 1.6; margin: 14px 4px; }
+    @media (max-width: 560px) { main { margin: 16px auto; } section { padding: 14px; } #player { min-height: 220px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="logo">♫</div>
+      <div>
+        <h1>Browser Music Player</h1>
+        <div class="sub">YouTube player bridge</div>
+      </div>
+    </header>
+    <section>
+      <div class="eyebrow">NOW PLAYING FROM YOUTUBE</div>
+      <h2 id="videoTitle">Đang tải video...</h2>
+      <div id="player"></div>
+      <p id="status">Khi trình phát sẵn sàng, nhấn Play trên video. Bạn có thể chuyển tab khác và giữ tab này mở để tiếp tục nghe.</p>
+    </section>
+    <p class="note">Video được phát bằng trình phát nhúng chính thức của YouTube. Một số video có thể không cho phép nhúng, bị giới hạn theo khu vực/tài khoản hoặc không khả dụng.</p>
+  </main>
+  <script src="player.js"></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
