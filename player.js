@@ -10,6 +10,7 @@ const channel = params.get('channel') || '';
 const extensionId = params.get('extensionId') || '';
 const hasValidExtensionId = /^[a-p]{32}$/.test(extensionId);
 const bridgeVersion = params.get('bridgeVersion') || '';
+const commandEventName = `bmp-youtube-command-${channel}`;
 const expectedPageOrigin = window.location.origin;
 const initialVolume = Math.round(Math.max(0, Math.min(1, Number(params.get('volume') ?? '0.8'))) * 100);
 const titleElement = document.getElementById('videoTitle');
@@ -83,18 +84,22 @@ function acknowledgeCommand(command, accepted, queued = false) {
   });
 }
 
-window.addEventListener('message', event => {
-  // A content script runs against the host document. The page sees its
-  // postMessage with the host page's HTTPS origin. Depending on the Chrome
-  // context, source can be window or null; accept only those cases, this exact
-  // page origin, our message marker, and the per-tab random channel.
-  if (event.origin !== expectedPageOrigin) return;
-  if (event.source !== null && event.source !== window) return;
-  const message = event.data;
-  if (!message || message.source !== 'browser-music-player-extension' || message.channel !== channel) return;
-  if (!allowedCommands.has(message.func)) return;
-  console.info('[Browser Music Player Bridge] Đã nhận lệnh từ popup:', message.func, { origin: event.origin, bridgeVersion });
+window.addEventListener(commandEventName, event => {
+  // The extension content script dispatches a DOM CustomEvent with JSON text.
+  // This avoids depending on MessageEvent.origin/source across isolated worlds.
+  let message;
+  try {
+    if (typeof event.detail !== 'string' || event.detail.length > 8000) return;
+    message = JSON.parse(event.detail);
+  } catch (_) {
+    return;
+  }
 
+  if (!message || message.source !== 'browser-music-player-extension'
+      || message.channel !== channel || message.extensionId !== extensionId
+      || !allowedCommands.has(message.func)) return;
+
+  console.info('[Browser Music Player Bridge] Nhận DOM command:', message.func);
   if (!player) {
     pendingCommands.push({ func: message.func, args: Array.isArray(message.args) ? message.args : [] });
     acknowledgeCommand(message.func, true, true);
@@ -105,8 +110,8 @@ window.addEventListener('message', event => {
   if (!accepted) emitBridgeEvent('COMMAND_ERROR', { message: `Bridge không thực hiện được lệnh ${message.func}.`, videoId: currentVideoId });
 });
 
-if (!hasValidExtensionId || !channel || bridgeVersion !== '3') {
-  setStatus('Tab này chưa được mở bởi Browser Music Player 1.0.3. Hãy mở video từ popup extension để bật kết nối điều khiển.');
+if (!hasValidExtensionId || !channel || bridgeVersion !== '4') {
+  setStatus('Tab này chưa được mở bởi Browser Music Player 1.0.4. Hãy mở video từ popup extension để bật kết nối điều khiển.');
 } else {
   emitBridgeEvent('SCRIPT_READY');
 }
@@ -118,7 +123,7 @@ window.onYouTubeIframeAPIReady = function () {
     emitBridgeEvent('ERROR', { errorCode: 2, videoId: initialVideoId });
     return;
   }
-  if (!hasValidExtensionId || !channel || bridgeVersion !== '3') {
+  if (!hasValidExtensionId || !channel || bridgeVersion !== '4') {
     setStatus('Hãy mở video thông qua popup Browser Music Player để bật điều khiển từ extension.');
   }
   youtubeLink.href = `https://www.youtube.com/watch?v=${initialVideoId}`;
