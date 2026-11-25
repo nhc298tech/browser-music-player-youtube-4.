@@ -1,44 +1,117 @@
 'use strict';
 
-// Trang này được host trên HTTPS (ví dụ GitHub Pages), không phải chrome-extension://.
-// YouTube yêu cầu HTTP Referer hoặc định danh API client cho trình phát nhúng.
+// This page is hosted on HTTPS so YouTube receives a normal web-page Referer.
+// The Chrome extension communicates with this page through a narrowly scoped content-script relay.
 const params = new URLSearchParams(window.location.search);
-const videoId = params.get('videoId') || '';
+const initialVideoId = params.get('videoId') || '';
 const channel = params.get('channel') || '';
+const initialVolume = Math.round(Math.max(0, Math.min(1, Number(params.get('volume') ?? '0.8'))) * 100);
 const titleElement = document.getElementById('videoTitle');
 const statusElement = document.getElementById('status');
-let player = null;
+const youtubeLink = document.getElementById('youtubeLink');
 
-function sendToParent(type, payload = {}) {
-  if (window.parent === window) return;
-  window.parent.postMessage({
-    source: 'browser-music-player-youtube-bridge',
-    channel,
-    type,
-    ...payload
-  }, '*');
-}
+let player = null;
+let currentVideoId = initialVideoId;
+let pendingCommands = [];
 
 function isValidVideoId(value) {
-  return /^[a-zA-Z0-9_-]{11}$/.test(value);
+  return /^[a-zA-Z0-9_-]{11}$/.test(value || '');
 }
 
 function setStatus(text) {
   statusElement.textContent = text;
 }
 
+function getVideoDetails() {
+  let data = {};
+  try {
+    data = player?.getVideoData?.() || {};
+  } catch (_) {
+    // Metadata may not be ready while the player is changing videos.
+  }
+  return {
+    videoId: data.video_id || currentVideoId,
+    title: data.title || ''
+  };
+}
+
+function emitBridgeEvent(type, payload = {}) {
+  if (!channel) return;
+  window.postMessage({
+    source: 'browser-music-player-youtube-bridge',
+    channel,
+    type,
+    ...payload
+  }, window.location.origin);
+}
+
+const allowedCommands = new Set([
+  'playVideo', 'pauseVideo', 'stopVideo', 'mute', 'unMute',
+  'setVolume', 'seekTo', 'loadVideoById', 'cueVideoById'
+]);
+
+function runPlayerCommand(command) {
+  if (!player || !command || !allowedCommands.has(command.func)) return false;
+  const args = Array.isArray(command.args) ? command.args : [];
+
+  try {
+    if (command.func === 'setVolume') {
+      const volume = Math.max(0, Math.min(100, Number(args[0])));
+      player.setVolume(Number.isFinite(volume) ? volume : 80);
+      return true;
+    }
+
+    if (command.func === 'loadVideoById' || command.func === 'cueVideoById') {
+      const input = args[0];
+      const videoId = typeof input === 'string' ? input : input?.videoId;
+      if (!isValidVideoId(videoId)) return false;
+      currentVideoId = videoId;
+      titleElement.textContent = 'Đang tải video...';
+      youtubeLink.href = `https://www.youtube.com/watch?v=${videoId}`;
+      const options = typeof input === 'string'
+        ? { videoId, startSeconds: 0 }
+        : { videoId, startSeconds: Math.max(0, Number(input.startSeconds) || 0) };
+      player[command.func](options);
+      return true;
+    }
+
+    player[command.func](...args);
+    return true;
+  } catch (error) {
+    emitBridgeEvent('COMMAND_ERROR', { message: String(error?.message || error), videoId: currentVideoId });
+    return false;
+  }
+}
+
+window.addEventListener('message', event => {
+  if (event.source !== window || event.origin !== window.location.origin) return;
+  const message = event.data;
+  if (!message || message.source !== 'browser-music-player-extension' || message.channel !== channel) return;
+  if (!allowedCommands.has(message.func)) return;
+
+  if (!player) {
+    pendingCommands.push({ func: message.func, args: Array.isArray(message.args) ? message.args : [] });
+    return;
+  }
+  runPlayerCommand(message);
+});
+
+// Tell the injected extension content script that the page-side message listener is ready.
+emitBridgeEvent('SCRIPT_READY');
+
 window.onYouTubeIframeAPIReady = function () {
-  if (!isValidVideoId(videoId)) {
+  if (!isValidVideoId(initialVideoId)) {
     titleElement.textContent = 'Link YouTube không hợp lệ';
     setStatus('Không tìm thấy mã video YouTube hợp lệ trong đường dẫn.');
-    sendToParent('ERROR', { errorCode: 'INVALID_VIDEO_ID' });
+    emitBridgeEvent('ERROR', { errorCode: 2, videoId: initialVideoId });
     return;
   }
 
+  youtubeLink.href = `https://www.youtube.com/watch?v=${initialVideoId}`;
   player = new YT.Player('player', {
     width: '100%',
     height: '100%',
-    videoId,
+    videoId: initialVideoId,
     playerVars: {
       autoplay: 0,
       controls: 1,
@@ -49,42 +122,37 @@ window.onYouTubeIframeAPIReady = function () {
     },
     events: {
       onReady(event) {
-        const data = event.target.getVideoData ? event.target.getVideoData() : {};
-        const title = data.title || 'YouTube video';
-        titleElement.textContent = title;
+        event.target.setVolume(Number.isFinite(initialVolume) ? initialVolume : 80);
+        const details = getVideoDetails();
+        if (details.title) titleElement.textContent = details.title;
         setStatus('Trình phát đã sẵn sàng. Nhấn Play trên video để bắt đầu.');
-        sendToParent('READY', { title, videoId });
+        emitBridgeEvent('READY', details);
+
+        const queued = pendingCommands.splice(0);
+        queued.forEach(runPlayerCommand);
       },
       onStateChange(event) {
-        const data = player && player.getVideoData ? player.getVideoData() : {};
-        const title = data.title || titleElement.textContent;
-        if (title) titleElement.textContent = title;
-        sendToParent('STATE', { playerState: event.data, title });
+        const details = getVideoDetails();
+        if (details.title) titleElement.textContent = details.title;
+        const labels = {
+          '-1': 'Chưa bắt đầu',
+          '0': 'Đã phát hết video',
+          '1': 'Đang phát',
+          '2': 'Đã tạm dừng',
+          '3': 'Đang tải/buffering',
+          '5': 'Đã sẵn sàng'
+        };
+        setStatus(labels[String(event.data)] || 'Trạng thái trình phát đã thay đổi.');
+        emitBridgeEvent('STATE', { ...details, playerState: event.data });
       },
       onError(event) {
         setStatus(`YouTube trả về lỗi ${event.data}. Video có thể không cho phép nhúng hoặc không khả dụng.`);
-        sendToParent('ERROR', { errorCode: event.data });
+        emitBridgeEvent('ERROR', { videoId: currentVideoId, errorCode: event.data });
+      },
+      onAutoplayBlocked() {
+        setStatus('YouTube đã chặn tự động phát. Hãy nhấn Play trực tiếp trên video.');
+        emitBridgeEvent('AUTOPLAY_BLOCKED', { videoId: currentVideoId });
       }
     }
   });
 };
-
-// Chỉ nhận lệnh từ cửa sổ cha đang nhúng trang này; channel phải khớp tham số phiên.
-window.addEventListener('message', event => {
-  if (event.source !== window.parent) return;
-  const message = event.data;
-  if (!message || message.source !== 'browser-music-player-extension' || message.channel !== channel) return;
-  if (!player || typeof player[message.func] !== 'function') return;
-
-  const allowed = new Set([
-    'playVideo', 'pauseVideo', 'stopVideo', 'mute', 'unMute',
-    'setVolume', 'seekTo', 'loadVideoById', 'cueVideoById'
-  ]);
-  if (!allowed.has(message.func)) return;
-
-  try {
-    player[message.func](...(Array.isArray(message.args) ? message.args : []));
-  } catch (error) {
-    sendToParent('COMMAND_ERROR', { message: String(error?.message || error) });
-  }
-});
